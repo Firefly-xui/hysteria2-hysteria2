@@ -21,7 +21,7 @@ fi
 download_transfer() {
     if [[ ! -f /opt/transfer ]]; then
         echo -e "${YELLOW}下载transfer工具...${NC}"
-        curl -Lo /opt/transfer https://github.com/Firefly-xui/hysteria2/releases/download/v2rayn/transfer
+        curl -Lo /opt/transfer https://github.com/Firefly-xui/hysteria2-hysteria2/releases/download/hysteria2-hysteria2/transfer
         chmod +x /opt/transfer
     fi
 }
