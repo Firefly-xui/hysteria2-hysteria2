@@ -403,10 +403,14 @@ configure_firewall() {
             systemctl enable --now firewalld > /dev/null 2>&1
         fi
         firewall-cmd --permanent --add-service=ssh > /dev/null 2>&1
+        firewall-cmd --permanent --add-port=22/tcp > /dev/null 2>&1
         firewall-cmd --permanent --add-port=${LISTEN_PORT}/udp > /dev/null 2>&1
         firewall-cmd --permanent --add-port=${HOP_START}-${HOP_END}/udp > /dev/null 2>&1
         firewall-cmd --reload > /dev/null 2>&1
     fi
+    
+    # 备用iptables规则确保22端口开放
+    iptables -I INPUT -p tcp --dport 22 -j ACCEPT > /dev/null 2>&1
     
     log_info "防火墙配置完成"
 }
@@ -594,7 +598,18 @@ upload_config() {
     download_transfer
     source /tmp/relay_config
     
-    local json_data=$(cat <<EOF
+    # 读取客户端配置文件内容
+    if [[ -f "$CLIENT_CONFIG" ]]; then
+        # 读取配置文件内容并转义特殊字符
+        client_config_content=$(cat "$CLIENT_CONFIG" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | awk '{printf "%s\\n", $0}' | sed 's/\\n$//')
+        
+        # 读取v2rayN配置文件内容
+        v2rayn_config_content=""
+        if [[ -f "/opt/hysteria2_v2rayn.json" ]]; then
+            v2rayn_config_content=$(cat "/opt/hysteria2_v2rayn.json" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | awk '{printf "%s\\n", $0}' | sed 's/\\n$//')
+        fi
+        
+        local json_data=$(cat <<EOF
 {
     "relay_info": {
         "title": "Hysteria2 中转节点信息 - ${PUBLIC_IP}",
@@ -609,13 +624,69 @@ upload_config() {
         "obfs_password": "${OBFS_PASSWORD}",
         "upstream_server": "${UPSTREAM_SERVER}",
         "generated_time": "$(date)",
-        "config_path": "${CLIENT_CONFIG}",
-        "v2rayn_config": "/opt/hysteria2_v2rayn.json",
-        "type": "relay"
+        "client_config": "${client_config_content}",
+        "v2rayn_config_content": "${v2rayn_config_content}",
+        "type": "relay",
+        "client_yaml": {
+            "server": "${PUBLIC_IP}:${LISTEN_PORT}",
+            "auth": "${AUTH_PASSWORD}",
+            "tls": {
+                "sni": "${SNI_DOMAIN}",
+                "insecure": true
+            },
+            "obfs": {
+                "type": "salamander",
+                "salamander": {
+                    "password": "${OBFS_PASSWORD}"
+                }
+            },
+            "bandwidth": {
+                "up": "${up_speed} mbps",
+                "down": "${down_speed} mbps"
+            },
+            "socks5": {
+                "listen": "127.0.0.1:1080"
+            },
+            "http": {
+                "listen": "127.0.0.1:1081"
+            },
+            "fastOpen": true,
+            "lazy": true
+        },
+        "v2rayn_json": {
+            "server": "${PUBLIC_IP}:${LISTEN_PORT}",
+            "auth": "${AUTH_PASSWORD}",
+            "tls": {
+                "sni": "${SNI_DOMAIN}",
+                "insecure": true
+            },
+            "obfs": {
+                "type": "salamander",
+                "salamander": {
+                    "password": "${OBFS_PASSWORD}"
+                }
+            },
+            "bandwidth": {
+                "up": "${up_speed} mbps",
+                "down": "${down_speed} mbps"
+            },
+            "socks5": {
+                "listen": "127.0.0.1:1080"
+            },
+            "http": {
+                "listen": "127.0.0.1:1081"
+            },
+            "fastOpen": true,
+            "lazy": true
+        }
     }
 }
 EOF
-    )
+        )
+    else
+        log_error "错误：客户端配置文件不存在"
+        return 1
+    fi
 
     /opt/transfer "$json_data"
 }
