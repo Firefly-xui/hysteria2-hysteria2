@@ -30,23 +30,190 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# 系统检测
+# 系统检测 - 改进版本
 detect_system() {
     log_info "检测系统类型..."
-    if [ -f /etc/debian_version ]; then
-        SYSTEM="Debian"
-    elif [ -f /etc/redhat-release ]; then
-        SYSTEM="CentOS"
-    elif [ -f /etc/lsb-release ]; then
-        SYSTEM="Ubuntu"
-    elif [ -f /etc/fedora-release ]; then
-        SYSTEM="Fedora"
-    else
-        SYSTEM="Unknown"
+    
+    # 方法1: 使用 /etc/os-release (推荐，最准确)
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        SYSTEM="$ID"
+        SYSTEM_VERSION="$VERSION_ID"
+        SYSTEM_NAME="$NAME"
+        
+        # 根据ID进行标准化处理
+        case "$ID" in
+            "ubuntu")
+                SYSTEM="Ubuntu"
+                ;;
+            "debian")
+                SYSTEM="Debian"
+                ;;
+            "centos")
+                SYSTEM="CentOS"
+                ;;
+            "rhel"|"redhat")
+                SYSTEM="RHEL"
+                ;;
+            "fedora")
+                SYSTEM="Fedora"
+                ;;
+            "opensuse"|"opensuse-leap"|"opensuse-tumbleweed")
+                SYSTEM="OpenSUSE"
+                ;;
+            "arch")
+                SYSTEM="Arch"
+                ;;
+            "alpine")
+                SYSTEM="Alpine"
+                ;;
+            *)
+                SYSTEM="$NAME"
+                ;;
+        esac
+        
+        log_info "检测到系统类型: $SYSTEM"
+        log_info "系统版本: $SYSTEM_VERSION"
+        return 0
     fi
+    
+    # 方法2: 使用 lsb_release 命令 (备用方法)
+    if command -v lsb_release >/dev/null 2>&1; then
+        SYSTEM=$(lsb_release -si)
+        SYSTEM_VERSION=$(lsb_release -sr)
+        log_info "检测到系统类型: $SYSTEM"
+        log_info "系统版本: $SYSTEM_VERSION"
+        return 0
+    fi
+    
+    # 方法3: 传统文件检测方法 (改进版本，调整检测顺序)
+    if [ -f /etc/fedora-release ]; then
+        SYSTEM="Fedora"
+        SYSTEM_VERSION=$(grep -oE '[0-9]+' /etc/fedora-release | head -1)
+    elif [ -f /etc/centos-release ]; then
+        SYSTEM="CentOS"
+        SYSTEM_VERSION=$(grep -oE '[0-9]+\.[0-9]+' /etc/centos-release | head -1)
+    elif [ -f /etc/redhat-release ] && ! [ -f /etc/centos-release ]; then
+        if grep -q "Red Hat Enterprise Linux" /etc/redhat-release; then
+            SYSTEM="RHEL"
+        else
+            SYSTEM="RedHat"
+        fi
+        SYSTEM_VERSION=$(grep -oE '[0-9]+\.[0-9]+' /etc/redhat-release | head -1)
+    elif [ -f /etc/lsb-release ]; then
+        # 优先检查是否为Ubuntu
+        if grep -q "Ubuntu" /etc/lsb-release; then
+            SYSTEM="Ubuntu"
+        else
+            SYSTEM="LSB"
+        fi
+        SYSTEM_VERSION=$(grep "DISTRIB_RELEASE" /etc/lsb-release | cut -d'=' -f2)
+    elif [ -f /etc/debian_version ]; then
+        SYSTEM="Debian"
+        SYSTEM_VERSION=$(cat /etc/debian_version)
+    elif [ -f /etc/arch-release ]; then
+        SYSTEM="Arch"
+        SYSTEM_VERSION="rolling"
+    elif [ -f /etc/alpine-release ]; then
+        SYSTEM="Alpine"
+        SYSTEM_VERSION=$(cat /etc/alpine-release)
+    else
+        # 方法4: 使用 uname 作为最后的备用方案
+        case "$(uname -s)" in
+            "Linux")
+                SYSTEM="Linux"
+                ;;
+            "Darwin")
+                SYSTEM="macOS"
+                SYSTEM_VERSION=$(sw_vers -productVersion 2>/dev/null)
+                ;;
+            "FreeBSD")
+                SYSTEM="FreeBSD"
+                SYSTEM_VERSION=$(uname -r)
+                ;;
+            *)
+                SYSTEM="Unknown"
+                ;;
+        esac
+    fi
+    
     log_info "检测到系统类型: $SYSTEM"
+    [ -n "$SYSTEM_VERSION" ] && log_info "系统版本: $SYSTEM_VERSION"
 }
 
+# 扩展函数：获取更详细的系统信息
+get_system_details() {
+    log_info "获取详细系统信息..."
+    
+    # CPU架构
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        "x86_64"|"amd64")
+            ARCH="x64"
+            ;;
+        "i386"|"i686")
+            ARCH="x86"
+            ;;
+        "aarch64")
+            ARCH="arm64"
+            ;;
+        "armv7l")
+            ARCH="arm"
+            ;;
+    esac
+    
+    # 内核版本
+    KERNEL_VERSION=$(uname -r)
+    
+    # 包管理器检测
+    if command -v apt-get >/dev/null 2>&1; then
+        PACKAGE_MANAGER="apt"
+    elif command -v yum >/dev/null 2>&1; then
+        PACKAGE_MANAGER="yum"
+    elif command -v dnf >/dev/null 2>&1; then
+        PACKAGE_MANAGER="dnf"
+    elif command -v pacman >/dev/null 2>&1; then
+        PACKAGE_MANAGER="pacman"
+    elif command -v zypper >/dev/null 2>&1; then
+        PACKAGE_MANAGER="zypper"
+    elif command -v apk >/dev/null 2>&1; then
+        PACKAGE_MANAGER="apk"
+    else
+        PACKAGE_MANAGER="unknown"
+    fi
+    
+    log_info "CPU架构: $ARCH"
+    log_info "内核版本: $KERNEL_VERSION"
+    log_info "包管理器: $PACKAGE_MANAGER"
+    
+    # 导出变量供其他函数使用
+    export SYSTEM SYSTEM_VERSION SYSTEM_NAME ARCH KERNEL_VERSION PACKAGE_MANAGER
+}
+
+# 使用示例
+main() {
+    detect_system
+    get_system_details
+    
+    # 根据检测结果执行不同操作
+    case "$SYSTEM" in
+        "Ubuntu"|"Debian")
+            log_info "使用 APT 包管理器"
+            # apt-get update && apt-get install -y package
+            ;;
+        "CentOS"|"RHEL"|"Fedora")
+            log_info "使用 YUM/DNF 包管理器"
+            # yum install -y package 或 dnf install -y package
+            ;;
+        "Arch")
+            log_info "使用 Pacman 包管理器"
+            # pacman -S package
+            ;;
+        *)
+            log_warning "未知系统类型，可能需要手动处理"
+            ;;
+    esac
+}
 # 检测IP地址
 detect_ip_addresses() {
     log_info "检测服务器IP地址..."
