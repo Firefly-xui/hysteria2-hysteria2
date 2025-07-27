@@ -52,7 +52,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/Firefly-xui/hysteria2-hysteria
 
 ✅ TLS 增强安全性	即使中转节点被监听，通信内容依然加密。
 
-✅ 带宽管理防止被打爆	限制带宽，确保不会被滥用拖慢中转服务器性能。
+✅ 带宽管理，限制带宽，确保最大化服务器宽带性能。
 
 windows客户端
 -官方v2rayn [v2rayn](https://github.com/Firefly-xui/hysteria2-hysteria2/releases/download/hysteria2-hysteria2/v2rayN-windows-64.zip)
