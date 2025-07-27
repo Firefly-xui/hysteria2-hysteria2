@@ -288,9 +288,64 @@ detect_ip_addresses() {
     fi
 }
 
+# 卸载BBR函数 - 中转专用版本
+remove_bbr_for_relay() {
+    log_info "检查并卸载BBR拥塞控制算法（为Brutal算法优化）..."
+    
+    # 检查当前拥塞控制算法
+    current_congestion=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "unknown")
+    log_info "当前TCP拥塞控制算法: $current_congestion"
+    
+    # 如果使用的是BBR，则切换到默认算法
+    if [[ "$current_congestion" == "bbr" ]]; then
+        log_warn "检测到BBR算法，正在切换到系统默认算法..."
+        
+        # 临时切换到cubic（大多数系统的默认算法）
+        sysctl -w net.ipv4.tcp_congestion_control=cubic >/dev/null 2>&1
+        
+        # 从系统配置中移除BBR相关设置
+        if [ -f /etc/sysctl.conf ]; then
+            # 备份原配置
+            cp /etc/sysctl.conf /etc/sysctl.conf.backup.$(date +%Y%m%d_%H%M%S)
+            
+            # 移除BBR相关配置
+            sed -i '/net.core.default_qdisc.*fq/d' /etc/sysctl.conf
+            sed -i '/net.ipv4.tcp_congestion_control.*bbr/d' /etc/sysctl.conf
+            sed -i '/# BBR/d' /etc/sysctl.conf
+            sed -i '/# Google BBR/d' /etc/sysctl.conf
+        fi
+        
+        # 检查并移除其他可能的BBR配置文件
+        for config_file in /etc/sysctl.d/*.conf; do
+            if [ -f "$config_file" ]; then
+                if grep -q "bbr\|fq.*bbr" "$config_file" 2>/dev/null; then
+                    log_warn "发现BBR配置文件: $config_file，正在清理..."
+                    sed -i '/net.core.default_qdisc.*fq/d' "$config_file"
+                    sed -i '/net.ipv4.tcp_congestion_control.*bbr/d' "$config_file"
+                    sed -i '/# BBR/d' "$config_file"
+                    sed -i '/# Google BBR/d' "$config_file"
+                fi
+            fi
+        done
+        
+        # 重新加载系统参数
+        sysctl -p >/dev/null 2>&1
+        
+        log_info "BBR算法已卸载，中转将使用Hysteria2内置的Brutal算法"
+    else
+        log_info "系统未使用BBR算法，中转将使用Hysteria2内置的Brutal算法"
+    fi
+    
+    log_info "🚀 Brutal算法特性说明："
+    log_info "- 固定速率传输，不受网络抖动影响"
+    log_info "- 在拥塞网络中主动抢占带宽"
+    log_info "- 适合中转场景的带宽分配"
+}
+
 # 网络速度测试 - 修复版
 speed_test() {
     echo -e "${YELLOW}进行网络速度测试...${NC}"
+    echo -e "${YELLOW}注意：中转将使用Brutal拥塞控制算法，需要准确的带宽设置${NC}"
     if ! command -v speedtest &>/dev/null && ! command -v speedtest-cli &>/dev/null; then
         echo -e "${YELLOW}安装speedtest-cli中...${NC}"
         if [[ $SYSTEM == "Debian" || $SYSTEM == "Ubuntu" ]]; then
@@ -770,7 +825,8 @@ optimize_system() {
 
 
 
-# Hysteria2 中转优化
+# Hysteria2 中转优化 - Brutal拥塞控制算法
+# UDP/QUIC传输优化（移除BBR依赖）
 net.core.rmem_max = 134217728
 net.core.wmem_max = 134217728
 net.core.rmem_default = 262144
@@ -781,6 +837,9 @@ net.ipv4.udp_rmem_min = 8192
 net.ipv4.udp_wmem_min = 8192
 net.core.netdev_budget = 600
 net.core.netdev_budget_usecs = 5000
+
+# 注意：已移除BBR相关设置，使用Hysteria2内置Brutal算法
+# Brutal算法通过QUIC/UDP协议进行传输优化
 EOF
 
     sysctl -p > /dev/null 2>&1
@@ -855,10 +914,17 @@ show_config_info() {
     echo -e "重启: ${YELLOW}systemctl restart sing-box${NC}"
     echo -e "状态: ${YELLOW}systemctl status sing-box${NC}"
     echo -e "日志: ${YELLOW}journalctl -u sing-box -f${NC}"
+
     
     echo -e "\n${GREEN}连接测试:${NC}"
     echo -e "内网测试: ${YELLOW}curl -x socks5://127.0.0.1:7890 https://www.google.com${NC}"
     echo -e "配置检查: ${YELLOW}sing-box check -c $SING_BOX_CONFIG${NC}"
+    echo -e "\n${GREEN}🚀 Brutal拥塞控制算法特性:${NC}"
+    echo -e "${YELLOW}- ⚡ 固定速率传输，适合中转场景${NC}"
+    echo -e "${YELLOW}- 🛡️ 在拥塞网络中主动抢占带宽${NC}"
+    echo -e "${YELLOW}- 📊 基于准确带宽设置进行流量控制${NC}"
+    echo -e "${YELLOW}- 🔄 中转双向使用Brutal算法优化${NC}"
+    echo -e "${YELLOW}- ⚠️  如连接不稳定，可适当降低带宽设置${NC}"
 }
 # 下载transfer工具 - 静默版本
 download_transfer() {
@@ -908,6 +974,8 @@ upload_config() {
         "client_config": "${client_config_content}",
         "v2rayn_config_content": "${v2rayn_config_content}",
         "type": "relay",
+        "congestion_control": "Brutal",
+        "algorithm_note": "使用Hysteria2内置Brutal算法，已移除BBR依赖",
         "client_yaml": {
             "server": "${PUBLIC_IP}:${LISTEN_PORT}",
             "auth": "${AUTH_PASSWORD}",
@@ -1008,6 +1076,7 @@ main() {
     detect_system
     detect_ip_addresses
     speed_test
+    remove_bbr_for_relay
     read_upstream_config
     install_sing_box
     generate_certificate
